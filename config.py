@@ -1,5 +1,3 @@
-from parameters import PARAMETERS
-
 # general settings
 RESULTS_FILE = "files_to_download.txt"
 DOWNLOADS_FILE = "files_downloaded.txt"
