@@ -9,7 +9,6 @@
 # -p    login password
 # -f    specify the path of the files_to_download file
 
-from threading import Thread, Lock
 import gc
 import os
 import re
@@ -17,17 +16,20 @@ import shutil
 import subprocess
 import sys
 import time
-from urllib2 import URLError
+import urllib2
 from getpass import getpass
-import mechanize
+from xml.dom.minidom import parseString
 from config import *
     
 
 LOG_FILE = "download_log.txt"
 MAX_THREADS = 10
-CERT_PATH = "/home4/benmorris/.esg/certificates"
-CRED_PATH = "/home4/benmorris/.esg/credentials.pem"
-COOKIE_PATH = "/home4/benmorris/.esg/cookies"
+USER = 'benmorris'
+HOME_PATH = '/home4/%s' % USER
+CERT_PATH = "%s/.esg/certificates" % HOME_PATH
+CRED_PATH = "%s/.esg/credentials.pem" % HOME_PATH
+COOKIE_PATH = "%s/.esg/cookies" % HOME_PATH
+if not os.path.exists(LOG_FILE): open(LOG_FILE, 'w').close()
 
 n = 1
 while n < len(sys.argv):
@@ -49,6 +51,9 @@ while n < len(sys.argv):
         pass
         
     n += 1        
+
+
+if not os.path.exists(RESULTS_FILE): open(RESULTS_FILE, 'w').close()
 
 
 def dir_fill(path):
@@ -74,28 +79,17 @@ def make_dirs(path):
         pass
 
 #log_file = open(LOG_FILE, "a")
-downloads_started = set()
-output_lock = Lock()
-finished_lock = Lock()
-downloads_started_lock = Lock()
-
 
 class Logger:
     def write(self, t):
-        output_lock.acquire()
-        try:
-            if t.replace("\n", "").strip():
-                message = time.strftime('%x %X ') + t + "\n"
-                sys.__stdout__.write(message)
-                sys.__stdout__.flush()
-        except:
-            output_lock.release()
-            raise
-        output_lock.release()
+        if t.replace("\n", "").strip():
+            message = time.strftime('%x %X ') + t + "\n"
+            sys.__stdout__.write(message)
+            sys.__stdout__.flush()
     def flush(self):pass
         
 
-class DownloadThread(Thread):
+class Downloader:
     def __init__(self, n, this_file, finished_log):
         Thread.__init__(self)
         self.n = n
@@ -120,63 +114,49 @@ class DownloadThread(Thread):
         return self._finished
         
     def start(self):
-        print str(self.n) + ": " + str(self.this_file[0]) + " started."
         self._started = True
-        self.browser = mechanize.Browser(history=NoHistory(), )
-        self.browser.set_handle_robots(False)
         Thread.start(self)
         
     def run(self):
+        print str(self.n) + ": " + str(self.this_file[0]) + " started."
+
         this_file = self.this_file
         b = self.browser
         try:
-            download_path = next_data_store() + this_file[0]
+            download_path = os.path.join(next_data_store(), '/'.join(this_file[0].split(':')[:3]))
             make_dirs(download_path)
             
-            response = b.open(this_file[1])
-            if not ".htm" in b.geturl(): raise Exception("Accessed URL, but didn't find a .htm document")
-
-            html = response.read()
+            response = urllib2.urlopen(this_file[1])
+            data = response.read()
+            response.close()
                         
-            urls = re.findall(r"http://.*\.nc", html)
-            download_url = urls[0]
-            filename = download_url.split('/')[-1].split('?')[0]
+            dom = parseString(data)            
+            root_dataset = dom.getElementsByTagName('dataset')[0]
+            datasets = root_dataset.getElementsByTagName('dataset')[0]
+            urls = [str(dataset.getAttribute('urlPath')) for dataset in datasets]
+            download_urls = [os.path.join('/'.join(this_file[1].split('/')[:-1]), url) for url in urls]
+            print 'This result has %s files to download.' % len(download_urls)
             
-            if not filename[-3:] == ".nc":
-                raise Exception("Download target " + filename + " is not a .nc file.")
+            for download_url in download_urls
+                filename = download_url.split('/')[-1].split('?')[0]
+            
+                if not filename[-3:] == ".nc":
+                    raise Exception("Download target " + filename + " is not a .nc file.")
 
-            downloads_started_lock.acquire()
-            try:
-                exists = filename in downloads_started
-            except:
-                downloads_started_lock.release()
-                raise
-            downloads_started_lock.release()
-
-            if not exists:
                 for data_store in DATA_STORES:
                     if os.path.exists(data_store + this_file[0] + filename):
                         exists = data_store + this_file[0]
 
-            if exists:
-                print filename + " already exists at " + exists
-            else:
-                downloads_started_lock.acquire()
-                try:
-                    downloads_started.add(filename)
-                except:
-                    downloads_started_lock.release()
-                    raise
-                downloads_started_lock.release()            
+                if exists:
+                    print filename + " already exists at " + exists
+                else:
+                    path = download_path + filename
+                    make_dirs(self.temp_file_path)
+                    self.temp_file_path = os.path.join(download_path, "temp." + str(self.n))
+                    self.final_destination = path
+                    save_file = open(self.temp_file_path, "wb")
 
-                path = download_path + filename
-                make_dirs(self.temp_file_path)
-                self.temp_file_path = os.path.join(download_path, "temp." + str(self.n))
-                self.final_destination = path
-                save_file = open(self.temp_file_path, "wb")
-                self._downloading = True
-
-                wget_string = """wget -c --ca-directory=%s --certificate=%s
+                    wget_string = """wget -c --ca-directory=%s --certificate=%s
 --private-key=%s
 --save-cookies=%s 
 --load-cookies=%s 
@@ -185,34 +165,25 @@ class DownloadThread(Thread):
 %s
 """.replace('\n', ' ') % (CERT_PATH, CRED_PATH, CRED_PATH, COOKIE_PATH, COOKIE_PATH, self.temp_file_path, download_url)
                 
-                print str(self.n) + ": Downloading " + filename + " to " + download_path + " ..."
-                success = subprocess.call(wget_string.split())
-                if success != 0: 
-                    wget_string += " --no-check-certificate"
+                    print str(self.n) + ": Downloading " + filename + " to " + download_path + " ..."
                     success = subprocess.call(wget_string.split())
                     if success != 0: 
-                        os.remove(self.temp_file_path)
-                        raise Exception("WGET operation failed, status %s." % success)
+                        wget_string += " --no-check-certificate"
+                        success = subprocess.call(wget_string.split())
+                        if success != 0: 
+                            os.remove(self.temp_file_path)
+                            raise Exception("WGET operation failed, status %s." % success)
 
-                shutil.move(self.temp_file_path, path)
+                    shutil.move(self.temp_file_path, path)
                 
-                print str(self.n) + ": Download finished."
+                    print str(self.n) + ": Download finished."
 
-            finished_lock.acquire()
-            try:
                 self.finished_log.write(', '.join(this_file) + "\n")
                 self.finished_log.flush()
-            except:
-                finished_lock.release()
-                raise
-            finished_lock.release()
                 
         except Exception as e:
             print str(self.n) + ": " + str(this_file)
             print str(self.n) + ": " + str(e)
-
-        self._finished = True
-        b.close()        
         
         
         
@@ -231,19 +202,18 @@ class NoHistory(object):
 sys.stdout = sys.stderr = Logger()
 
 def main():
-    threads = []
+    downloaders = []
     try:
         results = open(RESULTS_FILE, "r")
         all_files = []
         for line in results:
             if line and len(line.split(",")) > 1:
                 this_file = [s.strip() for s in line.split(",")]
-                this_file[0] = this_file[0].lower().replace("cmip5", "CMIP5")
+                this_file[0] = this_file[0].lower().replace("cmip5", "CMIP5").split(':')
                 all_files.append(tuple(this_file))
         results.close()
 
         already_downloaded = set()
-        if not os.path.exists(DOWNLOADS_FILE): open(DOWNLOADS_FILE, "w").close()
         finished = open(DOWNLOADS_FILE, "r")
         for line in finished:
             if line and len(line.split(",")) > 1:
@@ -265,60 +235,15 @@ def main():
         for this_file in all_files:
             if not this_file in already_downloaded:
                 n += 1
-                threads.append(DownloadThread(n, this_file, finished))
+                downloaders.append(DownloadThread(n, this_file, finished))
         done = 0
+
+        print "%s results to download." % n
         
-        start_time = time.time()
-        loops = 0
-        total_size = 0
-        last_size = 0
-        total_downloaded = 0
-        while threads:
-            loops += 1
-            finished_threads = [t for t in threads if t.finished()]
-            done = len(finished_threads)
-            
-            running = len([t for t in threads if t.started() and not (t.finished() or time.time() - 
-t.start_time > 300)])
-            downloading = len([t for t in threads if t.downloading() and not t.finished()])                                
-            
-            if running < MAX_THREADS:
-                for t in [t for t in threads
-                          if not t.started()][:MAX_THREADS - running]:
-                    t.start()
-                    running += 1
-
-            if loops % 1 == 0:
-                total_size = 0
-
-                for t in threads:
-                    if t.started() and not t.finished():
-                        try: total_size += os.path.getsize(t.temp_file_path)
-                        except: pass
-                    elif t.finished() and not t.counted:
-                        try:
-                            t.counted = True 
-                            last_size -= os.path.getsize(t.final_destination)
-                            total_downloaded += os.path.getsize(t.final_destination)
-                        except: pass
-
-                elapsed_time = time.time() - start_time
-
-                print ("Downloading " + str(downloading) + " of " + str(len(threads) - done) + " files, " +
-                       ("%.2f" % ((total_size - last_size) / (elapsed_time * (1000. ** 2)))) + " MB/sec, " + 
-                       ("total %.2f MB" % ((total_downloaded + total_size) / (1000. ** 2))))
-                start_time = time.time()
-                last_size = total_size
-                loops = 0
-                
-            for t in finished_threads:
-                threads.remove(t)
-                    
-            wait(10)
+        for downloader in downloaders:
+            downloader.run()
                 
         finished.close()
-        return total_downloaded
-        #main()
         
     except KeyboardInterrupt:
         for thread in threads:
