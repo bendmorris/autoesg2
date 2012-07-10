@@ -2,10 +2,10 @@ import urllib2
 from xml.dom.minidom import parseString
 from parameters import facets
 import os
+from config import *
 
 
 RESULT_LIMIT = 10000
-RESULTS_FILE = 'files_to_download.txt'
 urlstring = "http://pcmdi9.llnl.gov/esg-search/search?"
 
 def format_url_string(limit, *args):
@@ -26,8 +26,9 @@ def check(results_file, facets_done, docs, *facet_args):
         # we have values for all facets, so save list of URLs
         print 'downloading', facet_args
         urls = download(docs, *facet_args)
-        results_file.write('\n%s,%s' % (':'.join(facet_args), ';'.join(urls)))
-        results_file.flush()
+        if urls:
+            results_file.write('\n%s,%s' % (':'.join(facet_args), urls[0]))
+            results_file.flush()
         facets_done.add(facet_args)
         return
     else:
