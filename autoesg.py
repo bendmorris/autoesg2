@@ -5,8 +5,8 @@ import os
 
 
 RESULT_LIMIT = 10000
+RESULTS_FILE = 'files_to_download.txt'
 urlstring = "http://pcmdi9.llnl.gov/esg-search/search?"
-results_file = 'files_to_download.txt'
 
 def format_url_string(limit, *args):
     arguments = zip((facet[0] for facet in facets), args)
@@ -15,7 +15,7 @@ def format_url_string(limit, *args):
 def get_str_from_doc(doc, string):
     arrs = doc.getElementsByTagName('arr')
     for arr in filter(lambda a: a.getAttribute('name')==string, arrs):
-        strs = [this_str.toxml().replace('<str>', '').replace('</str>', '').lower() for this_str in arr.getElementsByTagName('str')]
+        strs = [this_str.toxml().replace('<str>', '').replace('</str>', '') for this_str in arr.getElementsByTagName('str')]
         return strs
 
 def check(results_file, facets_done, docs, *facet_args):
@@ -56,15 +56,15 @@ def download(docs, *facet_args):
     urls = []
     for doc in docs: 
         formats = get_str_from_doc(doc, 'format')
-        if not [True for format in formats if 'netcdf' in format]: return
+        if not [True for format in formats if 'netcdf' in format.lower()]: return
         these_urls = get_str_from_doc(doc, 'url')
-        urls += [url for url in these_urls if 'application/xml+thredds|catalog' in url]
+        urls += [url for url in these_urls if 'application/xml+thredds|catalog' in url.lower()]
     return urls
 
 
 facets_done = set()
 try:
-    results_file = open(results_file, 'r')
+    results_file = open(RESULTS_FILE, 'r')
     results_file.readline()
     for line in results_file:
         if line:
@@ -72,9 +72,9 @@ try:
             facets_done.add(facet)
     results_file.close()
 except:
-    results_file = open(results_file, 'w')
+    results_file = open(RESULTS_FILE, 'w')
     results_file.write('facet,url')
-results_file = open(results_file, 'a')
+results_file = open(RESULTS_FILE, 'a')
 
 for model in facets[1][1]:
     for experiment in facets[2][1]:
